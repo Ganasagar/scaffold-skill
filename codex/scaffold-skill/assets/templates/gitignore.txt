@@ -1,0 +1,9 @@
+# scaffold-skill defaults
+output/
+.env
+.env.*
+*.key
+*.pem
+*.p12
+.DS_Store
+__pycache__/
