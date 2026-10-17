@@ -2,6 +2,8 @@
 
 ## 0.2.0
 
+- Pilot correction: adoption adds a managed intake block to existing charters while preserving their original instructions; recovery restores the exact original charter.
+
 - Default to reviewed adoption in place and project-scoped installation/setup.
 - Version migration plans; bind source identities, destinations, intake, and conversions.
 - Preflight boundaries, stale sources, collisions, symlinks, overlapping operations,

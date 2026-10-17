@@ -114,10 +114,13 @@ def validate(plan, root, scaffold):
             if kind == 'create' and path.name == 'STATE.md':
                 now = action.get('now') or ['Adoption incomplete: review current actions before starting work.']
                 content = '# STATE\n\n## Now\n' + ''.join(f'- {x}\n' for x in now) + '\n## Decisions\n- Legacy files retained unchanged.\n\n## Log\n'
-            if kind == 'skip' and path.name == 'AGENTS.md' and legacy:
+            if kind == 'skip' and path.name == 'AGENTS.md':
                 original = scaffold.read(path)
-                body = 'Read preserved instructions before acting; unresolved conflicts require user guidance.\n' + ''.join(f'- [{n}]({n})\n' for n in legacy)
-                content = scaffold.upsert_block(original, '<!-- scaffold-skill:legacy:start -->', '<!-- scaffold-skill:legacy:end -->', body)
+                content = scaffold.upsert_block(original, scaffold.INTAKE_START, scaffold.INTAKE_END,
+                                                scaffold.intake_block(intake))
+                if legacy:
+                    body = 'Read preserved instructions before acting; unresolved conflicts require user guidance.\n' + ''.join(f'- [{n}]({n})\n' for n in legacy)
+                    content = scaffold.upsert_block(content, '<!-- scaffold-skill:legacy:start -->', '<!-- scaffold-skill:legacy:end -->', body)
                 kind = 'replace' if content != original else 'skip'
             sp[i] = (kind, path, content)
         seen.add(src)

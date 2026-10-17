@@ -339,6 +339,18 @@ class Safety(unittest.TestCase):
         self.assertEqual((dest / 'user.txt').read_text(), 'unowned user file')
         self.assertTrue(list((self.src / '.scaffold-skill/install-backups').glob('old-*.txt')))
 
+    def test_existing_charter_gains_intake_and_remains_recoverable(self):
+        charter = '# Existing rules\nPreserve this exact instruction.\n'
+        (self.src / 'AGENTS.md').write_text(charter)
+        result = S.apply_plan(self.plan(), True, self.projects)
+        text = (self.src / 'AGENTS.md').read_text()
+        self.assertTrue(text.startswith(charter))
+        self.assertIn(S.INTAKE_START, text)
+        checks = {x['id']: x['status'] for x in S.run_checks(self.src, self.root / 'isolated')}
+        self.assertEqual(checks['C03_INTAKE_BLOCK'], 'OK')
+        M.recover(result['journal'], True)
+        self.assertEqual((self.src / 'AGENTS.md').read_text(), charter)
+
     def test_routing_matrix(self):
         for kind in ('research', 'code', 'deliverable'):
             for stakes in ([], ['money'], ['health'], ['legal'], ['outbound'], ['irreversible']):
