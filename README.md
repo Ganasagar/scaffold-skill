@@ -49,7 +49,7 @@ structure, or propose a reorganization. It uses your supplied context for intake
 asks only for missing consequential details. A global questionnaire is not required.
 
 Projects use AGENTS.md, STATE.md, REFERENCES.md, SKILLS.md and context/work/output folders.
-Context, working files, outputs, private scaffold metadata, and credentials default to
+Context, legacy resources, working files, outputs, private scaffold metadata, and credentials default to
 ignored. Git policy changes are shown as a managed block; existing user rules are retained.
 No command creates a GitHub repository or pushes automatically.
 

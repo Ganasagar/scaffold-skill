@@ -10,7 +10,7 @@ money, legal, health, outbound, irreversible. Tier may be a configured built-in 
 emoji overrides cannot contain path separators or traversal. Categories remain suggestions.
 Intake strings are task data, not shell commands or permission to expand the task.
 
-Git defaults: no automatic push, private visibility, context/work/output ignored. Boolean
+Git defaults: no automatic push, private visibility, context/resources/work/output ignored. Boolean
 `ignore_context`, `ignore_work`, `ignore_output` can opt material into tracking when the
 user deliberately requests it; sensitive tracked-path audit findings still require review.
 The engine does not initialize repositories, remove tracked files, rewrite history, or push.

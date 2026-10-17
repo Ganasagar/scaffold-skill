@@ -428,7 +428,7 @@ def gitignore_text(intake: dict) -> str:
         if (intake.get("git") or {}).get("ignore_" + folder, True):
             text += folder + "/\n"
     if (intake.get("git") or {}).get("ignore_context", True):
-        text += "context/\n"
+        text += "context/\nresources/\n"
     return text
 
 
@@ -741,13 +741,14 @@ def git_privacy(root):
     gi = root / '.gitignore'
     if gi.is_file() and 'context/' in read(gi):
         names.append('context/probe.txt')
+        names.append('resources/probe.txt')
     result = subprocess.run(['git', '-C', str(root), 'check-ignore', '--no-index', '--stdin'],
                             input='\n'.join(names) + '\n', capture_output=True, text=True)
     if result.returncode not in (0, 1):
         return False, 'Git ignore evaluation failed: ' + result.stderr.strip()
     ignored = set(result.stdout.splitlines())
     missing = sorted(set(names) - ignored)
-    tracked = subprocess.run(['git', '-C', str(root), 'ls-files', '-z', '--', 'context', 'work', 'output',
+    tracked = subprocess.run(['git', '-C', str(root), 'ls-files', '-z', '--', 'context', 'resources', 'work', 'output',
                               '.scaffold-skill', '.env', '.env.*', '*.pem', '*.key'], capture_output=True, text=True)
     if tracked.returncode:
         return False, 'Unable to inspect already-tracked private paths'

@@ -4,7 +4,7 @@ Local environment: Linux, Python 3.14.4. Repository baseline:
 `dda324d088903b726bb5288e43baddb30eb94396`.
 
 Passed:
-- 49 unittest methods, including parameterized routing and write-failure cases.
+- 51 unittest methods, including parameterized routing and write-failure cases.
 - Python compilation of all runtime/test scripts.
 - Bash syntax check of install.sh.
 - Codex skill-creator format validator.
@@ -28,7 +28,11 @@ ancestor rules, already-tracked private material, escaped/redacted indexes, loca
 malformed markers/TOML, repeated install, owned upgrade, stale-resource cleanup, uninstall
 conflicts, routing combinations, accurate stakes-floor previews, and log rotation boundaries.
 
-Not established by these checks: native custom-agent
-discovery/execution, arbitrary external path dependencies, configured Codex instruction
+Native verifier/challenger discovery additionally passed on CLI 0.163.0 using random
+markers in disposable agent descriptions. Project configuration required stored trust;
+the temporary pilot-only global trust entry was removed and the original config restored
+byte-for-byte. No reviewer agent was spawned.
+
+Not established by these checks: native custom-agent execution, arbitrary external path dependencies, configured Codex instruction
 budget overrides, a real production migration, or import completeness. The license is
 also an owner release decision, not an implementation test.

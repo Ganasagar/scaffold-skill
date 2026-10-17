@@ -351,6 +351,15 @@ class Safety(unittest.TestCase):
         M.recover(result['journal'], True)
         self.assertEqual((self.src / 'AGENTS.md').read_text(), charter)
 
+    def test_legacy_resources_are_private_inputs_by_default(self):
+        subprocess.run(['git', 'init', '-q', str(self.src)], check=True)
+        S.execute(S.plan_scaffold(self.src, INTAKE, {}, 'test'))
+        resources = self.src / 'resources'; resources.mkdir()
+        (resources / 'private.txt').write_text('private input')
+        result = subprocess.run(['git', '-C', str(self.src), 'check-ignore', 'resources/private.txt'], capture_output=True)
+        self.assertEqual(result.returncode, 0)
+        self.assertTrue(S.git_privacy(self.src)[0])
+
     def test_routing_matrix(self):
         for kind in ('research', 'code', 'deliverable'):
             for stakes in ([], ['money'], ['health'], ['legal'], ['outbound'], ['irreversible']):

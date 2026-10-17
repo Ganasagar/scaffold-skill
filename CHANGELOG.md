@@ -2,6 +2,8 @@
 
 ## 0.2.0
 
+- Treat legacy resources/ as private inputs alongside context/ and audit tracked legacy inputs.
+
 - Pilot correction: adoption adds a managed intake block to existing charters while preserving their original instructions; recovery restores the exact original charter.
 
 - Default to reviewed adoption in place and project-scoped installation/setup.
