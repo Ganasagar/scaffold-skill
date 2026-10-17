@@ -1,5 +1,6 @@
-# scaffold-skill defaults
-output/
+# Private scaffold metadata, recovery journals, and archives
+.scaffold-skill/
+archive/
 .env
 .env.*
 *.key

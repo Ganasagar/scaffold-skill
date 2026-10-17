@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """scaffold-skill: scaffold, audit and organize personal agent projects for Codex.
 
-Stdlib only. Every write path is non-destructive: missing files are created,
-existing files are never overwritten (managed blocks are upserted, with a backup).
+Stdlib only. Create missing charter files, update managed blocks and maintenance
+files with backups, and apply preflighted migrations with private recovery journals.
 
 Commands:
   harness   show / init the one-time harness profile (~/.codex/AGENTS.md block + agents)
@@ -27,9 +27,14 @@ import os
 import re
 import shutil
 import sys
+import subprocess
+from urllib.parse import quote, unquote
+
+import safeio as IO
+import migration as M
 from pathlib import Path
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 SKILL_DIR = Path(__file__).resolve().parent.parent
 TEMPLATES = SKILL_DIR / "assets" / "templates"
 AGENT_ASSETS = SKILL_DIR / "assets" / "agents"
@@ -125,6 +130,7 @@ def est_tokens(nbytes: int) -> int:
 
 
 def read(p: Path) -> str:
+    IO.bounded(p, p.anchor)
     return p.read_text(encoding="utf-8", errors="replace")
 
 
@@ -136,7 +142,10 @@ def load_json(path: str | None) -> dict:
     if not path:
         return {}
     with open(path, encoding="utf-8") as f:
-        return json.load(f)
+        data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError('JSON input must be an object')
+        return data
 
 
 def render(template: str, values: dict[str, str]) -> str:
@@ -147,6 +156,8 @@ def render(template: str, values: dict[str, str]) -> str:
 
 def upsert_block(text: str, start: str, end: str, body: str) -> str:
     block = f"{start}\n{body.rstrip()}\n{end}"
+    if text.count(start) != text.count(end) or text.count(start) > 1 or (end in text and text.index(end) < text.index(start)):
+        raise ValueError("ambiguous managed block markers")
     if start in text and end in text:
         pre, rest = text.split(start, 1)
         _, post = rest.split(end, 1)
@@ -155,10 +166,23 @@ def upsert_block(text: str, start: str, end: str, body: str) -> str:
 
 
 def backup(path: Path, archive_dir: Path) -> Path:
-    archive_dir.mkdir(parents=True, exist_ok=True)
-    dst = archive_dir / f"{path.stem}-{stamp()}{path.suffix}"
-    shutil.copy2(path, dst)
-    return dst
+    return IO.backup(path, archive_dir)
+
+
+def project_root(value):
+    p = Path(value).expanduser().absolute()
+    return IO.bounded(p, p.anchor)
+
+
+def profile_for(a, root=None):
+    user = load_harness(a.codex_home)
+    if root:
+        for d in (root, *root.parents):
+            p = d / '.codex' / 'scaffold-skill' / 'profile.json'
+            if p.is_file():
+                IO.bounded(p, d)
+                return {**user, **json.loads(read(p))}
+    return user
 
 
 # ---------------------------------------------------------------- tiers & emoji
@@ -205,7 +229,7 @@ def project_template() -> dict:
         "never": ["Q2: things the agent must never do here"],
         "caveats": ["Q2: context not written anywhere else"],
         "stakes": [],
-        "git": {"push": True, "visibility": "private", "ignore_context": True},
+        "git": {"push": False, "visibility": "private", "ignore_context": True},
         "tier": None,
         "emoji": None,
         "_help": {
@@ -220,7 +244,7 @@ def harness_template() -> dict:
         "reply_style": "terse",
         "naming": "name-vN",
         "stakes_floor": "low",
-        "git_default": {"push": True, "visibility": "private", "ignore_context": True},
+        "git_default": {"push": False, "visibility": "private", "ignore_context": True},
         "name_style": "tier",
         "_help": {
             "reply_style": f"Q1: one of {list(REPLY_STYLES)}",
@@ -234,16 +258,36 @@ def harness_template() -> dict:
 
 def validate_project(intake: dict) -> list[str]:
     errs = []
-    if not str(intake.get("goal", "")).strip():
-        errs.append("goal (Q1) is required")
-    bad = [s for s in intake.get("stakes", []) if s not in STAKES]
-    if bad:
-        errs.append(f"unknown stakes {bad}; allowed {list(STAKES)}")
-    vis = (intake.get("git") or {}).get("visibility", "private")
-    if vis not in ("private", "public"):
-        errs.append("git.visibility must be private|public")
-    if len(intake.get("never", [])) > 15 or len(intake.get("caveats", [])) > 15:
-        errs.append("never/caveats capped at 15 items each")
+    if not isinstance(intake, dict):
+        return ['intake must be an object']
+    goal = intake.get('goal')
+    if not isinstance(goal, str) or not goal.strip() or goal.startswith(('Q1:', 'TODO')):
+        errs.append('a meaningful goal is required; template placeholders are incomplete')
+    for key in ('name', 'done', 'horizon'):
+        if key in intake and not isinstance(intake[key], str):
+            errs.append(f'{key} must be a string')
+    for key in ('stakes', 'never', 'caveats'):
+        vals = intake.get(key, [])
+        if not isinstance(vals, list) or any(not isinstance(v, str) for v in vals):
+            errs.append(f'{key} must be a list of strings')
+        elif key == 'stakes' and any(v not in STAKES for v in vals):
+            errs.append('unknown stakes')
+        elif key != 'stakes' and len(vals) > 15:
+            errs.append(f'{key} capped at 15 items')
+    g = intake.get('git', {})
+    if not isinstance(g, dict):
+        errs.append('git must be an object')
+    else:
+        if g.get('visibility', 'private') not in ('private', 'public'):
+            errs.append('git.visibility must be private|public')
+        for key in ('push', 'ignore_context', 'ignore_work', 'ignore_output'):
+            if key in g and not isinstance(g[key], bool):
+                errs.append(f'git.{key} must be boolean')
+    if intake.get('tier') is not None and (not isinstance(intake['tier'], str) or intake['tier'] not in TIERS):
+        errs.append('unknown tier')
+    emoji = intake.get('emoji')
+    if emoji is not None and (not isinstance(emoji, str) or any(c in emoji for c in '/\\\n\r') or '..' in emoji):
+        errs.append('emoji must be a path-safe string')
     return errs
 
 
@@ -286,7 +330,7 @@ def intake_block(intake: dict, harness: dict | None = None) -> str:
         if items:
             lines.append(f"- {label}:")
             lines.extend(f"  - {x}" for x in items[:15])
-    push = "push" if g.get("push", True) else "local only"
+    push = "push only when requested" if g.get("push", False) else "local only"
     ctx = "context/ ignored" if g.get("ignore_context", True) else "context/ tracked"
     lines.append(f"- Git: {push}, {g.get('visibility', 'private')}, {ctx}")
     return "\n".join(lines)
@@ -299,7 +343,7 @@ def codex_home(arg: str | None) -> Path:
 
 def harness_body(h: dict) -> str:
     g = h.get("git_default") or {}
-    git = (f"{'push' if g.get('push', True) else 'local only'}, {g.get('visibility', 'private')}, "
+    git = (f"{'push only when requested' if g.get('push', False) else 'local only'}, {g.get('visibility', 'private')}, "
            f"{'context/ ignored' if g.get('ignore_context', True) else 'context/ tracked'}")
     return render(read(HARNESS_ASSET), {
         "REPLY_STYLE": h.get("reply_style", "terse"),
@@ -314,7 +358,14 @@ CONFIG_SNIPPET = "[agents]\nmax_concurrent_threads_per_session = 4\n"
 
 
 def cmd_harness(a) -> int:
-    home = codex_home(a.codex_home)
+    if a.scope == 'project':
+        if not a.project:
+            raise ValueError('--project is required for project-scoped harness setup')
+        root = project_root(a.project)
+        home = root / '.codex'
+    else:
+        home = project_root(str(codex_home(a.codex_home)))
+        root = home
     prof_path = home / "scaffold-skill" / "profile.json"
     if a.action == "show":
         if not prof_path.exists():
@@ -327,43 +378,38 @@ def cmd_harness(a) -> int:
     h = {**harness_template(), **load_json(a.answers)}
     h.pop("_help", None)
     errs = validate_harness(h)
+    git_errors = validate_project({"goal": "profile defaults", "git": h.get("git_default", {})})
+    errs.extend(git_errors)
     if errs:
         emit({"status": "invalid", "errors": errs}, a.json, "invalid answers:\n- " + "\n- ".join(errs))
         return 2
-    agents_md = home / "AGENTS.md"
-    old = read(agents_md) if agents_md.exists() else ""
+    agents_md = root / 'AGENTS.md'
+    old = read(agents_md) if agents_md.exists() else ''
     new = upsert_block(old, HARNESS_START, HARNESS_END, harness_body(h))
-    actions = [{"path": str(agents_md), "op": "upsert-block" if old else "create"},
-               {"path": str(prof_path), "op": "write"}]
-    for src in sorted(AGENT_ASSETS.glob("*.toml")):
-        dst = home / "agents" / src.name
-        actions.append({"path": str(dst), "op": "skip (exists)" if dst.exists() else "create"})
-    cfg = home / "config.toml"
-    cfg_has_agents = cfg.exists() and re.search(r"^\[agents\]", read(cfg), re.M)
+    edits = [(agents_md, new), (prof_path, json.dumps(h, indent=2) + '\n')]
+    for src in sorted(AGENT_ASSETS.glob('*.toml')):
+        dst = home / 'agents' / src.name
+        if dst.exists() and read(dst) != read(src):
+            raise ValueError(f'agent name collision: {dst}')
+        edits.append((dst, read(src)))
+    cfg = home / 'config.toml'
     if a.write_config:
-        actions.append({"path": str(cfg), "op": "skip ([agents] exists)" if cfg_has_agents else "append [agents]"})
-    if a.dry_run:
-        emit({"dry_run": True, "actions": actions, "block": harness_body(h)}, a.json,
-             "DRY RUN\n" + "\n".join(f"  {x['op']:<22} {x['path']}" for x in actions)
-             + "\n\n--- block ---\n" + harness_body(h))
-        return 0
-    home.mkdir(parents=True, exist_ok=True)
-    if old and old != new:
-        backup(agents_md, home / "scaffold-skill" / "backups")
-    agents_md.write_text(new, encoding="utf-8")
-    prof_path.parent.mkdir(parents=True, exist_ok=True)
-    prof_path.write_text(json.dumps(h, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    (home / "agents").mkdir(exist_ok=True)
-    for src in sorted(AGENT_ASSETS.glob("*.toml")):
-        dst = home / "agents" / src.name
-        if not dst.exists():
-            shutil.copy2(src, dst)
-    if a.write_config and not cfg_has_agents:
-        with cfg.open("a", encoding="utf-8") as f:
-            f.write("\n" + CONFIG_SNIPPET)
-    note = "" if a.write_config else f"\nOptional, add to {cfg}:\n{CONFIG_SNIPPET}"
-    emit({"status": "ok", "actions": actions}, a.json,
-         "\n".join(f"  {x['op']:<22} {x['path']}" for x in actions) + note)
+        try:
+            import tomllib
+        except ImportError:
+            raise ValueError('config edits require Python 3.11+; omit --write-config and edit TOML manually') from None
+        previous = read(cfg) if cfg.exists() else ''
+        parsed = tomllib.loads(previous)
+        if 'agents' not in parsed:
+            proposed = previous + '\n' + CONFIG_SNIPPET
+            tomllib.loads(proposed)
+            edits.append((cfg, proposed))
+        elif not isinstance(parsed['agents'], dict):
+            raise ValueError('agents config must be a table')
+    result = IO.commit_files(root, edits, a.dry_run)
+    emit(result, a.json, ('DRY RUN' if a.dry_run else 'APPLIED') + '\n' +
+         '\n'.join(f['path'] for f in result['files']) +
+         (f"\nRecovery: {result['journal']}" if result['journal'] else ''))
     return 0
 
 
@@ -378,15 +424,20 @@ def load_harness(home_arg: str | None) -> dict:
 # ---------------------------------------------------------------- scaffold
 def gitignore_text(intake: dict) -> str:
     text = read(TEMPLATES / "gitignore.txt")
+    for folder in ("work", "output"):
+        if (intake.get("git") or {}).get("ignore_" + folder, True):
+            text += folder + "/\n"
     if (intake.get("git") or {}).get("ignore_context", True):
-        text += "context/\n"
+        text += "context/\nresources/\n"
     return text
 
 
-def plan_scaffold(root: Path, intake: dict, harness: dict, title: str) -> list[tuple[str, Path, str | None]]:
+def plan_scaffold(root: Path, intake: dict, harness: dict, title: str, date: str | None = None) -> list[tuple[str, Path, str | None]]:
     """Return [(op, path, content)]; op in mkdir|create|skip."""
+    IO.bounded(root, root.anchor)
+    IO.bounded(root / ".scaffold-skill", root)
     name = intake.get("name") or strip_emoji_prefix(root.name)
-    values = {"NAME": name, "TITLE": title, "DATE": today(), "TIER": default_tier(intake, harness),
+    values = {"NAME": name, "TITLE": title, "DATE": date or today(), "TIER": default_tier(intake, harness), "ROUTING_TABLE": routing_table(),
               "NEXT": "fill SKILLS.md procedures; add inputs to context/ and run `scaffold.py index`."}
     block = f"{INTAKE_START}\n{intake_block(intake, harness)}\n{INTAKE_END}"
     files = {
@@ -398,22 +449,38 @@ def plan_scaffold(root: Path, intake: dict, harness: dict, title: str) -> list[t
     }
     plan: list[tuple[str, Path, str | None]] = []
     for d in DIRS:
-        p = root / d
+        p = IO.bounded(root / d, root)
+        if p.exists() and not p.is_dir():
+            raise ValueError(f"expected directory: {p}")
         plan.append(("skip" if p.is_dir() else "mkdir", p, None))
     for fname, content in files.items():
-        p = root / fname
-        plan.append(("skip" if p.exists() else "create", p, content))
+        p = IO.bounded(root / fname, root)
+        if p.exists() and not p.is_file():
+            raise ValueError(f'expected regular file: {p}')
+        if fname == '.gitignore':
+            old = read(p) if p.exists() else ''
+            content = upsert_block(old, '# scaffold-skill:privacy:start', '# scaffold-skill:privacy:end', content)
+            op = 'skip' if old == content else ('replace' if p.exists() else 'create')
+        else:
+            op = 'skip' if p.exists() else 'create'
+        plan.append((op, p, content))
     return plan
 
 
 def execute(plan) -> None:
+    # Validate all outputs before creating even a directory.
+    paths = [p for _, p, _ in plan]
+    root = Path(os.path.commonpath([str(p) for p in paths]))
     for op, p, content in plan:
-        if op == "mkdir":
+        IO.bounded(p, p.anchor)
+        if op == 'create' and p.exists():
+            raise ValueError(f'create target exists: {p}')
+        if op == 'mkdir' and p.exists() and not p.is_dir():
+            raise ValueError(f'directory target is a file: {p}')
+    for op, p, content in plan:
+        if op == 'mkdir':
             p.mkdir(parents=True, exist_ok=True)
-        elif op == "create":
-            p.parent.mkdir(parents=True, exist_ok=True)
-            with open(p, "x", encoding="utf-8") as f:  # "x" = never overwrite
-                f.write(content or "")
+    return IO.commit_files(root, [(p, text) for op, p, text in plan if op in ('create', 'replace')])
 
 
 def report_plan(plan, root: Path, dry: bool) -> str:
@@ -424,13 +491,16 @@ def report_plan(plan, root: Path, dry: bool) -> str:
 
 
 def resolve_intake(a) -> tuple[dict, list[str]]:
-    intake = {**project_template(), **load_json(getattr(a, "intake", None))}
+    supplied = load_json(getattr(a, 'intake', None))
+    if not isinstance(supplied, dict):
+        return {}, ['intake must be an object']
+    intake = {**project_template(), **supplied}
     intake.pop("_help", None)
     return intake, validate_project(intake)
 
 
 def cmd_apply(a) -> int:
-    root = Path(a.path).expanduser().resolve()
+    root = project_root(a.path)
     if not root.is_dir():
         print(f"not a directory: {root}", file=sys.stderr)
         return 2
@@ -438,30 +508,31 @@ def cmd_apply(a) -> int:
     if errs:
         emit({"status": "invalid", "errors": errs}, a.json, "invalid intake:\n- " + "\n- ".join(errs))
         return 2
-    harness = load_harness(a.codex_home)
+    harness = profile_for(a, root)
     name = intake.get("name") if intake.get("name") != "my-project" else strip_emoji_prefix(root.name)
     intake["name"] = name
     title = root.name if root.name != name else name
     plan = plan_scaffold(root, intake, harness, title)
-    if not a.dry_run:
-        execute(plan)
-    emit({"root": str(root), "dry_run": a.dry_run,
-          "actions": [{"op": op, "path": str(p)} for op, p, _ in plan]}, a.json,
+    result = execute(plan) if not a.dry_run else None
+    emit({"recovery": result["journal"] if result else None, "root": str(root), "dry_run": a.dry_run,
+          "actions": [{"op": op, "path": str(p), "content": text, "sha256": IO.digest(text.encode()) if text is not None else None} for op, p, text in plan]}, a.json,
          report_plan(plan, root, a.dry_run))
     return 0
 
 
 def cmd_new(a) -> int:
-    parent = Path(a.parent).expanduser().resolve()
+    parent = project_root(a.parent)
     intake, errs = resolve_intake(a)
     intake["name"] = a.name
     if errs:
         emit({"status": "invalid", "errors": errs}, a.json, "invalid intake:\n- " + "\n- ".join(errs))
         return 2
-    harness = load_harness(a.codex_home)
+    harness = profile_for(a, parent)
     style = a.name_style or harness.get("name_style", "tier")
     tier, tier_emoji, why = (intake["tier"], TIERS[intake["tier"]][0], "pinned") \
         if intake.get("tier") in TIERS else pick_tier(a.name, intake.get("goal", ""))
+    if a.emoji and validate_project({**intake, "emoji": a.emoji}):
+        raise ValueError("invalid emoji override")
     proj_emoji = a.emoji or intake.get("emoji") or pick_project_glyph(a.name, intake.get("goal", ""))
     slug = slugify(a.name)
     folder = display_name(slug, style, tier_emoji, proj_emoji)
@@ -471,18 +542,17 @@ def cmd_new(a) -> int:
         return 2
     title = folder
     plan = [("skip" if root.is_dir() else "mkdir", root, None)] + plan_scaffold(root, intake, harness, title)
-    if not a.dry_run:
-        execute(plan)
-    emit({"root": str(root), "folder": folder, "slug": slug, "tier": tier, "tier_emoji": tier_emoji,
+    result = execute(plan) if not a.dry_run else None
+    emit({"recovery": result["journal"] if result else None, "root": str(root), "folder": folder, "slug": slug, "tier": tier, "tier_emoji": tier_emoji,
           "tier_rationale": why, "project_emoji": proj_emoji, "dry_run": a.dry_run,
-          "actions": [{"op": op, "path": str(p)} for op, p, _ in plan]}, a.json,
+          "actions": [{"op": op, "path": str(p), "content": text, "sha256": IO.digest(text.encode()) if text is not None else None} for op, p, text in plan]}, a.json,
          f"folder: {folder}  (tier {tier} {tier_emoji}: {why}; git repo name: {slug})\n"
          + report_plan(plan, root, a.dry_run))
     return 0
 
 
 def cmd_refine(a) -> int:
-    root = Path(a.path).expanduser().resolve()
+    root = project_root(a.path)
     agents = root / "AGENTS.md"
     if not agents.exists():
         print("AGENTS.md missing — run `apply` first", file=sys.stderr)
@@ -492,16 +562,16 @@ def cmd_refine(a) -> int:
         emit({"status": "invalid", "errors": errs}, a.json, "invalid intake:\n- " + "\n- ".join(errs))
         return 2
     old = read(agents)
-    new = upsert_block(old, INTAKE_START, INTAKE_END, intake_block(intake, load_harness(a.codex_home)))
+    new = upsert_block(old, INTAKE_START, INTAKE_END, intake_block(intake, profile_for(a, root)))
     if new == old:
         emit({"status": "unchanged"}, a.json, "unchanged")
         return 0
     if a.dry_run:
-        emit({"dry_run": True, "new_block": intake_block(intake)}, a.json, "DRY RUN — new block:\n"
-             + intake_block(intake))
+        emit({"dry_run": True, "new_block": intake_block(intake, profile_for(a, root)), "content": new, "sha256": IO.digest(new.encode())}, a.json, "DRY RUN — new block:\n"
+             + intake_block(intake, profile_for(a, root)))
         return 0
     bk = backup(agents, root / "work" / "archive")
-    agents.write_text(new, encoding="utf-8")
+    IO.commit_files(root, [(agents, new)])
     emit({"status": "updated", "backup": str(bk)}, a.json, f"updated AGENTS.md block; backup: {bk}")
     return 0
 
@@ -512,36 +582,58 @@ def ref_rows(text: str) -> set[str]:
     for line in text.splitlines():
         m = re.match(r"^\|\s*`?([^|`]+?)`?\s*\|", line)
         if m and m.group(1).strip() not in ("path", "---"):
-            rows.add(m.group(1).strip())
+            rows.add(unquote(m.group(1).strip()))
     return rows
 
 
 def indexable(root: Path) -> list[Path]:
     out = []
-    ctx = root / "context"
-    if ctx.is_dir():
-        out += [p for p in sorted(ctx.rglob("*")) if p.is_file() and not p.name.startswith(".")]
-    for extra in ("work/state-archive.md", "MEMORY.md"):
-        if (root / extra).is_file():
-            out.append(root / extra)
-    return out
+    for directory in ('context', 'resources', 'work/archive'):
+        ctx = root / directory
+        IO.bounded(ctx, root)
+        if ctx.is_dir():
+            for d, dirs, names in os.walk(ctx, followlinks=False):
+                dirs[:] = [n for n in dirs if not n.startswith('.') and not (Path(d) / n).is_symlink()]
+                for n in sorted(names):
+                    p = Path(d) / n
+                    if not n.startswith('.') and not p.is_symlink() and p.is_file():
+                        out.append(p)
+    for extra in ('work/state-archive.md', 'CLAUDE.md', 'MEMORY.md'):
+        p = IO.bounded(root / extra, root)
+        if p.is_file():
+            out.append(p)
+    return sorted(out)
 
 
 def cmd_index(a) -> int:
-    root = Path(a.path).expanduser().resolve()
+    root = project_root(a.path)
     ref = root / "REFERENCES.md"
     if not ref.exists():
         print("REFERENCES.md missing — run `apply` first", file=sys.stderr)
         return 2
     text = read(ref)
+    if a.public:
+        target = root / '.scaffold-skill' / 'private-references.md'
+        private = read(target) if target.exists() else text
+        for file in indexable(root):
+            rel = str(file.relative_to(root))
+            if rel not in ref_rows(private):
+                private += f'| {quote(rel, safe="/.-_")} | input | review privately | {est_tokens(file.stat().st_size)} |\n'
+        public = '# REFERENCES\n\nPrivate input index is maintained locally; request relevant sources when needed.\n'
+        gi = root / '.gitignore'
+        policy = upsert_block(read(gi) if gi.exists() else '', '# scaffold-skill:private-index:start', '# scaffold-skill:private-index:end', '/.scaffold-skill/')
+        result = IO.commit_files(root, [(target, private), (ref, public), (gi, policy)], a.dry_run)
+        emit({'redacted': True, **result}, a.json, 'private input index retained locally; public index redacted')
+        return 0
+    if 'Private input index is maintained locally' in text:
+        raise ValueError('redacted index: use --public to update the private index')
     have = ref_rows(text)
     files = {str(p.relative_to(root)): p for p in indexable(root)}
     added = [rel for rel in files if rel not in have]
     stale = sorted(h for h in have if not (root / h).exists())
-    if added and not a.dry_run:
-        rows = "".join(f"| {rel} | TODO | TODO | {est_tokens(files[rel].stat().st_size)} |\n" for rel in added)
-        ref.write_text(text.rstrip("\n") + "\n" + rows, encoding="utf-8")
-    emit({"added": added, "stale": stale, "dry_run": a.dry_run}, a.json,
+    rows = "".join(f"| {quote(rel, safe='/.-_')} | TODO | TODO | {est_tokens(files[rel].stat().st_size)} |\n" for rel in added)
+    result = IO.commit_files(root, [(ref, text.rstrip("\n") + "\n" + rows)] if added else [], a.dry_run)
+    emit({"added": added, "stale": stale, "dry_run": a.dry_run, **result}, a.json,
          f"added {len(added)} row(s){' (dry run)' if a.dry_run else ''}"
          + "".join(f"\n  + {r}" for r in added)
          + "".join(f"\n  ! stale: {s}" for s in stale))
@@ -560,7 +652,7 @@ def split_state(text: str) -> tuple[str, list[str], str]:
 
 
 def cmd_rotate(a) -> int:
-    root = Path(a.path).expanduser().resolve()
+    root = project_root(a.path)
     state = root / "STATE.md"
     if not state.exists():
         print("STATE.md missing", file=sys.stderr)
@@ -580,6 +672,8 @@ def cmd_rotate(a) -> int:
     entries = [e for e in entries if any(x.strip() for x in e)]
     # newest-first if the first dated entry sorts after the last; keep the newest `keep`.
     dates = [e[0][2:12] for e in entries if LOG_LINE.match(e[0])]
+    if len(dates) != len(entries) or (dates != sorted(dates) and dates != sorted(dates, reverse=True)):
+        raise ValueError('log entries must all be dated and chronologically ordered before rotation')
     newest_first = len(dates) > 1 and dates[0] > dates[-1]
     keep_n = max(a.keep, 0)
     if len(entries) <= keep_n:
@@ -590,27 +684,18 @@ def cmd_rotate(a) -> int:
         keep, move = entries[:keep_n], entries[keep_n:]
     else:
         keep, move = entries[len(entries) - keep_n:], entries[:len(entries) - keep_n]
-    if a.dry_run:
-        emit({"dry_run": True, "move": len(move), "keep": len(keep)}, a.json,
-             f"DRY RUN — would move {len(move)} entr(ies), keep {len(keep)}")
-        return 0
-    archive = root / "work" / "state-archive.md"
-    archive.parent.mkdir(parents=True, exist_ok=True)
-    moved_text = "\n".join("\n".join(e) for e in move) + "\n"
-    with archive.open("a", encoding="utf-8") as f:
-        if archive.stat().st_size == 0:
-            f.write("# STATE archive — rotated log entries\n\n")
-        f.write(f"## Rotated {today()}\n{moved_text}\n")
-    note = f"- {today()}: Rotated {len(move)} older log entries → work/state-archive.md"
-    kept = [note] + ["\n".join(e) for e in keep] if newest_first else ["\n".join(e) for e in keep] + [note]
-    state.write_text(head + "\n".join(kept) + "\n" + (("\n" + tail) if tail else ""), encoding="utf-8")
-    ref = root / "REFERENCES.md"
-    if ref.exists() and "work/state-archive.md" not in ref_rows(read(ref)):
-        with ref.open("a", encoding="utf-8") as f:
-            f.write(f"| work/state-archive.md | rotated STATE log | history questions | "
-                    f"{est_tokens(archive.stat().st_size)} |\n")
-    new_size = len(read(state).encode("utf-8"))
-    emit({"status": "rotated", "moved": len(move), "kept": len(keep), "bytes_before": size,
+    archive = root / 'work' / 'state-archive.md'
+    moved_text = '\n'.join('\n'.join(e) for e in move) + '\n'
+    archive_text = read(archive) if archive.exists() else '# STATE archive — rotated log entries\n\n'
+    archive_text += f'## Rotated {today()}\n{moved_text}\n'
+    state_text = head + '\n'.join('\n'.join(e) for e in keep) + '\n' + (('\n' + tail) if tail else '')
+    ref = root / 'REFERENCES.md'
+    edits = [(archive, archive_text), (state, state_text)]
+    if ref.exists() and 'work/state-archive.md' not in ref_rows(read(ref)):
+        edits.append((ref, read(ref) + f'| work/state-archive.md | rotated STATE log | history questions | {est_tokens(len(archive_text.encode()))} |\n'))
+    result = IO.commit_files(root, edits, a.dry_run)
+    new_size = len(state_text.encode("utf-8"))
+    emit({"status": "preview" if a.dry_run else "rotated", "dry_run": a.dry_run, "recovery": result["journal"], "files": result["files"], "moved": len(move), "kept": len(keep), "bytes_before": size,
           "bytes_after": new_size}, a.json, f"moved {len(move)} entries; STATE.md {size} B → {new_size} B")
     return 0
 
@@ -646,6 +731,31 @@ def now_lines(state_text: str) -> int:
     return len([x for x in m.group(1).splitlines() if x.strip()]) if m else -1
 
 
+def git_privacy(root):
+    if not shutil.which('git'):
+        return None, 'Git unavailable; effective ignore policy not verified'
+    probe = subprocess.run(['git', '-C', str(root), 'rev-parse', '--show-toplevel'], capture_output=True, text=True)
+    if probe.returncode:
+        return None, 'No Git repository; ignore patterns are proposals, not verified protection'
+    names = ['work/probe.txt', 'output/probe.txt', '.env', 'key.pem', '.scaffold-skill/probe.json']
+    gi = root / '.gitignore'
+    if gi.is_file() and 'context/' in read(gi):
+        names.append('context/probe.txt')
+        names.append('resources/probe.txt')
+    result = subprocess.run(['git', '-C', str(root), 'check-ignore', '--no-index', '--stdin'],
+                            input='\n'.join(names) + '\n', capture_output=True, text=True)
+    if result.returncode not in (0, 1):
+        return False, 'Git ignore evaluation failed: ' + result.stderr.strip()
+    ignored = set(result.stdout.splitlines())
+    missing = sorted(set(names) - ignored)
+    tracked = subprocess.run(['git', '-C', str(root), 'ls-files', '-z', '--', 'context', 'resources', 'work', 'output',
+                              '.scaffold-skill', '.env', '.env.*', '*.pem', '*.key'], capture_output=True, text=True)
+    if tracked.returncode:
+        return False, 'Unable to inspect already-tracked private paths'
+    paths = [p for p in tracked.stdout.split('\0') if p]
+    return not missing and not paths, f'unprotected examples: {missing}; already-tracked private paths: {len(paths)} (history unchanged)'
+
+
 def run_checks(root: Path, home: Path) -> list[dict]:
     res = []
 
@@ -678,22 +788,23 @@ def run_checks(root: Path, home: Path) -> list[dict]:
             f"{len(unindexed)} unindexed — run `index`" if unindexed else "all inputs indexed", "WARN")
     else:
         add("C06_REFERENCES_COVERAGE", False, "REFERENCES.md missing")
-    gi = root / ".gitignore"
-    lines = {x.strip() for x in read(gi).splitlines()} if gi.exists() else set()
-    need = {"output/", *SECRET_PATTERNS}
-    miss = sorted(need - lines)
-    add("C07_GITIGNORE", not miss, f"missing patterns: {miss}" if miss else "output/ + secrets ignored")
+    protected, detail = git_privacy(root)
+    add('C07_GITIGNORE', protected is not False, detail, 'WARN' if protected is None else 'FAIL')
+    if protected is None:
+        res[-1]['status'] = 'WARN'
     dup = [f for f in LEGACY_FILES if (root / f).exists()]
     add("C08_NO_DUPLICATE_CHARTER", not dup,
         f"legacy charter files present: {dup} — index or fold into AGENTS/STATE" if dup else "single charter", "WARN")
     chain = agents_chain_bytes(root, home)
     add("C09_CODEX_DOC_LIMIT", chain < 0.8 * CODEX_DOC_LIMIT,
-        f"merged AGENTS chain {chain} B (warn ≥ 80% of {CODEX_DOC_LIMIT}; Codex truncates past the limit)", "WARN")
+        f"estimated default AGENTS chain {chain} B; default budget {CODEX_DOC_LIMIT}; config overrides/fallback discovery not resolved", "WARN")
+    if res[-1]["status"] == "OK":
+        res[-1]["status"] = "WARN"
     return res
 
 
 def cmd_check(a) -> int:
-    root = Path(a.path).expanduser().resolve()
+    root = project_root(a.path)
     res = run_checks(root, codex_home(a.codex_home))
     fails = sum(r["status"] == "FAIL" for r in res)
     warns = sum(r["status"] == "WARN" for r in res)
@@ -719,7 +830,7 @@ def route(stakes: list[str], kind: str, items: int, sources: int, decision: bool
     agents: list[str] = []
     if tier == "P3":
         agents.append(f"workers≤4 ({'explorer' if kind == 'code' else 'default'})")
-    if tier in ("P2", "P3") and (high or asked == "verify" or kind == "outbound"):
+    if tier == "P3" or (tier == "P2" and (high or asked == "verify" or kind == "outbound")):
         agents.append("codex review" if kind == "code" else "verifier")
     if (decision and high) or asked == "challenge":
         agents.append("challenger")
@@ -730,8 +841,19 @@ def route(stakes: list[str], kind: str, items: int, sources: int, decision: bool
             "stage_in_work_first": tier != "P0"}
 
 
+def routing_table():
+    rows = [('| Tier | Trigger | Verification |'), ('|---|---|---|')]
+    for kind, items, stakes in (('trivial', 1, []), ('deliverable', 1, []), ('deliverable', 1, ['money']), ('research', 5, [])):
+        result = route(stakes, kind, items, 1, False)
+        trigger = {'P0': 'Trivial maintenance', 'P1': 'Low-stakes deliverable', 'P2': 'Money/legal/health/outbound/irreversible or high floor', 'P3': 'At least 5 items or 3 independent sources'}[result['tier']]
+        rows.append(f"| {result['tier']} | {trigger} | {result['verification']} |")
+    return '\n'.join(rows)
+
+
 def cmd_route(a) -> int:
-    floor = load_harness(a.codex_home).get("stakes_floor", "low")
+    floor = profile_for(a, project_root(a.project or ".")).get("stakes_floor", "low")
+    if a.items < 0 or a.sources < 0:
+        raise ValueError("item/source counts cannot be negative")
     stakes = [s for s in (a.stakes or "").split(",") if s]
     bad = [s for s in stakes if s not in STAKES]
     if bad:
@@ -770,134 +892,91 @@ def is_tier_dir(name: str) -> bool:
 def inventory(root: Path) -> list[dict]:
     projects = []
     for d in sorted(root.iterdir()):
-        if not d.is_dir() or d.name.startswith((".", "_")):
+        if d.is_symlink() or not d.is_dir() or d.name.startswith((".", "_")):
             continue
         if is_tier_dir(d.name):
             for c in sorted(d.iterdir()):
-                if c.is_dir() and not c.name.startswith((".", "_")):
+                if not c.is_symlink() and c.is_dir() and not c.name.startswith((".", "_")):
                     projects.append((c, strip_emoji_prefix(d.name)))
         else:
             projects.append((d, None))
     out = []
     for d, current_tier in projects:
+        for f in CONTROL_FILES + LEGACY_FILES:
+            IO.bounded(d / f, root)
         cb = control_bytes(d)
         snippet = ""
         for f in ("AGENTS.md", "CLAUDE.md", "MEMORY.md"):
             if (d / f).is_file():
                 snippet += read(d / f)[:2000] + " "
         out.append({
-            "path": str(d), "name": d.name, "slug": slugify(strip_emoji_prefix(d.name)),
+            "path": str(d), "project_id": M.project_id(root, d), "hazards": M.hazards(d), "name": d.name, "slug": slugify(strip_emoji_prefix(d.name)),
             "dated": bool(DATED_DIR.match(d.name)), "generation": generation(d),
             "control_bytes": cb, "est_tokens_per_session": est_tokens(cb),
-            "current_tier": current_tier, "_text": snippet,
+            "current_tier": current_tier,
+            "knowledge_sources": [str(p.relative_to(d)) for p in indexable(d)] + [f for f in CONTROL_FILES if (d / f).is_file()],
+            "worksheet": {"goal": None, "active_work": None, "constraints": None, "decisions": None,
+                          "unresolved": ["Review source instructions and complete intake with evidence paths"]},
+            "_text": snippet,
             "_hash": file_hash(d / "AGENTS.md") or file_hash(d / "CLAUDE.md"),
         })
     return out
 
 
-def propose(root: Path, style: str) -> dict:
+def propose(root: Path, style: str, intakes=None, reorganize=False) -> dict:
     inv = inventory(root)
-    by_slug: dict[str, list[str]] = {}
-    by_hash: dict[str, list[str]] = {}
+    groups = {}
     for p in inv:
-        if p["dated"]:
-            continue
-        by_slug.setdefault(p["slug"], []).append(p["name"])
-        if p["_hash"]:
-            by_hash.setdefault(p["_hash"], []).append(p["name"])
-    dups = [v for v in by_slug.values() if len(v) > 1] + [v for v in by_hash.values() if len(v) > 1]
-    dup_sets = []
-    for v in dups:
-        s = sorted(set(v))
-        if len(s) > 1 and s not in dup_sets:
-            dup_sets.append(s)
-    dup_names = {n for s in dup_sets for n in s}
-    actions, ambiguous, tiers_used = [], [], {}
+        groups.setdefault(p['slug'], []).append(str(Path(p['path']).relative_to(root)))
+    duplicates = [v for v in groups.values() if len(v) > 1]
+    actions, ambiguous, tiers = [], [], {}
+    intakes = intakes or {}
     for p in inv:
-        if p["dated"]:
-            actions.append({"op": "review", "path": p["path"], "reason": "dated run folder (scheduled output?)"})
-            continue
-        tier, emoji, why = pick_tier(p["slug"], p["_text"][:600])
-        p.update(proposed_tier=tier, tier_emoji=emoji, tier_rationale=why)
+        tier, emoji, why = pick_tier(p['slug'], p['_text'][:600])
+        p.update(proposed_tier=tier, tier_rationale=why)
+        tiers.setdefault(tier, {'emoji': emoji, 'projects': []})['projects'].append(p['name'])
+        rel = str(Path(p['path']).relative_to(root))
+        reviewed = intakes.get(rel)
         if tier == UNSORTED[0]:
-            ambiguous.append({"name": p["name"], "reason": why})
-        tiers_used.setdefault(tier, []).append(p["name"])
-        if p["name"] in dup_names:
-            actions.append({"op": "review", "path": p["path"], "reason": "possible duplicate — decide which survives"})
+            ambiguous.append({'name': p['name'], 'path': rel, 'reason': why})
+        if p['dated'] or not reviewed or tier == UNSORTED[0] or any(rel in g for g in duplicates):
+            actions.append({'op': 'review', 'path': p['path'], 'reason': 'dated, ambiguous, duplicate hint, or missing reviewed intake'})
             continue
-        glyph = pick_project_glyph(p["slug"], p["_text"][:600])
-        folder = display_name(p["slug"], style, emoji, glyph)
-        tier_dir = root / f"{emoji} {tier}" if style != "plain" else root / tier
-        dst = tier_dir / folder
-        if Path(p["path"]) != dst:
-            actions.append({"op": "move", "src": p["path"], "dst": str(dst), "tier": tier})
-        if p["generation"] in ("legacy-memory", "partial", "bare"):
-            actions.append({"op": "convert", "path": str(dst), "from": p["generation"]})
+        src = Path(p['path'])
+        dst = root / (f'{emoji} {tier}' if style != 'plain' else tier) / display_name(p['slug'], style, emoji, pick_project_glyph(p['slug'])) if reorganize else src
+        actions.append({'op': 'adopt', 'project_id': p['project_id'], 'src': str(src), 'dst': str(dst),
+                        'identity': M.tree(src), **{k: v for k, v in reviewed.items() if k in ('reviewed', 'handoff_reviewed', 'intake', 'now')}})
     for p in inv:
-        p.pop("_text", None)
-        p.pop("_hash", None)
-    total = sum(p["est_tokens_per_session"] for p in inv)
-    return {
-        "root": str(root), "style": style, "projects": inv,
-        "proposed_tiers": {t: {"emoji": TIERS[t][0] if t in TIERS else UNSORTED[1],
-                               "projects": sorted(v)} for t, v in sorted(tiers_used.items())},
-        "duplicates": dup_sets, "ambiguous": ambiguous, "actions": actions,
-        "summary": {"projects": len(inv), "dated": sum(p["dated"] for p in inv),
-                    "generations": {g: sum(p["generation"] == g for p in inv)
-                                    for g in ("standard", "legacy-memory", "partial", "bare")},
-                    "est_tokens_per_session_total": total},
-    }
+        p.pop('_text', None); p.pop('_hash', None)
+    return {'schema_version': M.VERSION, 'date': today(), 'plan_id': IO.digest(os.urandom(32)), 'root': str(root),
+            'style': style, 'projects': inv, 'duplicates': duplicates, 'ambiguous': ambiguous,
+            'proposed_tiers': tiers, 'actions': actions,
+            'summary': {'projects': len(inv), 'dated': sum(p['dated'] for p in inv),
+                        'generations': {g: sum(p['generation'] == g for p in inv) for g in ('standard', 'legacy-memory', 'partial', 'bare')},
+                        'est_tokens_per_session_total': sum(p['est_tokens_per_session'] for p in inv)}}
 
 
-def apply_plan(plan: dict, yes: bool) -> list[dict]:
-    done = []
-    for act in plan.get("actions", []):
-        if act["op"] == "move":
-            src, dst = Path(act["src"]), Path(act["dst"])
-            if not src.exists():
-                done.append({**act, "result": "skip (src missing)"})
-            elif dst.exists():
-                done.append({**act, "result": "skip (dst exists)"})
-            elif not yes:
-                done.append({**act, "result": "would move"})
-            else:
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                os.rename(src, dst)
-                done.append({**act, "result": "moved"})
-        elif act["op"] == "convert":
-            path = Path(act["path"])
-            if not path.is_dir():
-                done.append({**act, "result": "skip (not moved yet)" if yes else "would convert"})
-                continue
-            intake = {**project_template(), "name": strip_emoji_prefix(path.name),
-                      "goal": "TODO — migrated project; run `refine` with the 4-question intake"}
-            intake.pop("_help", None)
-            sp = plan_scaffold(path, intake, {}, path.name)
-            if yes:
-                execute(sp)
-                created = [str(p.name) for op, p, _ in sp if op != "skip"]
-                done.append({**act, "result": f"created {created}"})
-            else:
-                done.append({**act, "result": "would create " + str([p.name for op, p, _ in sp if op != "skip"])})
-        else:
-            done.append({**act, "result": "manual review"})
-    return done
+def apply_plan(plan: dict, yes: bool, root=None) -> list[dict]:
+    if root is None:
+        raise ValueError('selected root required independently of plan contents')
+    return M.apply(plan, root, yes, sys.modules[__name__])
 
 
 def cmd_onboard(a) -> int:
     if a.apply_plan:
-        plan = load_json(a.apply_plan)
-        res = apply_plan(plan, a.yes)
-        emit({"applied": a.yes, "results": res}, a.json,
-             ("APPLIED" if a.yes else "DRY RUN (pass --yes to execute)") + "\n"
-             + "\n".join(f"  {r['op']:<8} {r.get('src', r.get('path'))} → {r.get('dst', '')}  [{r['result']}]"
-                         for r in res))
+        if not a.root:
+            raise ValueError('supply the selected root when applying a plan')
+        res = apply_plan(load_json(a.apply_plan), a.yes, project_root(a.root))
+        emit(res, a.json, json.dumps(res, indent=2))
         return 0
-    root = Path(a.root).expanduser().resolve()
-    style = a.name_style or load_harness(a.codex_home).get("name_style", "tier")
-    prop = propose(root, style)
+    root = project_root(a.root or '.')
+    style = a.name_style or profile_for(a, root).get('name_style', 'tier')
+    prop = propose(root, style, load_json(a.intakes), a.reorganize)
     if a.plan_out:
-        Path(a.plan_out).write_text(json.dumps(prop, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        target = project_root(a.plan_out)
+        if target.exists():
+            raise ValueError('plan output exists; choose a new filename')
+        IO.write(target, json.dumps(prop, indent=2, ensure_ascii=False) + '\n')
     s = prop["summary"]
     lines = [f"onboard: {root}  ({s['projects']} folders, {s['dated']} dated, "
              f"~{s['est_tokens_per_session_total']} tokens/session in control files)",
@@ -911,10 +990,10 @@ def cmd_onboard(a) -> int:
         lines.append("\nduplicates: " + "; ".join(" = ".join(d) for d in prop["duplicates"]))
     if prop["ambiguous"]:
         lines.append("ambiguous: " + ", ".join(f"{x['name']} ({x['reason']})" for x in prop["ambiguous"]))
-    lines.append(f"\n{sum(x['op'] == 'move' for x in prop['actions'])} move(s), "
-                 f"{sum(x['op'] == 'convert' for x in prop['actions'])} convert(s), "
-                 f"{sum(x['op'] == 'review' for x in prop['actions'])} review(s) proposed"
-                 + (f" → plan written to {a.plan_out}" if a.plan_out else ""))
+    adopts = [x for x in prop['actions'] if x['op'] == 'adopt']
+    lines.append(f"\n{len(adopts)} adoption(s), {sum(x['src'] != x['dst'] for x in adopts)} relocation(s), "
+                 f"{sum(x['op'] == 'review' for x in prop['actions'])} review-only project(s) proposed"
+                 + (f" → plan written to {a.plan_out}" if a.plan_out else ''))
     emit(prop, a.json, "\n".join(lines))
     return 0
 
@@ -930,6 +1009,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser = lambda *x, **k: _add(*x, parents=[common], **k)  # type: ignore[method-assign]
 
     h = sub.add_parser("harness", help="show / init the harness profile")
+    h.add_argument("--scope", choices=("project", "user"), default="project")
+    h.add_argument("--project", help="project root for local harness")
     h.add_argument("action", choices=("show", "init"))
     h.add_argument("--answers", help="harness answers JSON (from `template --level harness`)")
     h.add_argument("--dry-run", action="store_true")
@@ -957,6 +1038,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     i = sub.add_parser("index", help="index context/ + archives in REFERENCES.md")
     i.add_argument("path")
+    i.add_argument("--public", action="store_true", help="redact public reference metadata; retain private index locally")
     i.add_argument("--dry-run", action="store_true")
 
     r = sub.add_parser("rotate", help="rotate STATE.md log")
@@ -967,6 +1049,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--dry-run", action="store_true")
 
     ro = sub.add_parser("route", help="classify a task into P0-P3")
+    ro.add_argument("--project", help="resolve project-local routing profile")
     ro.add_argument("--stakes", help=f"comma list of {','.join(STAKES)}")
     ro.add_argument("--kind", default="deliverable", help="trivial|edit|deliverable|outbound|code|research")
     ro.add_argument("--items", type=int, default=1)
@@ -975,17 +1058,22 @@ def build_parser() -> argparse.ArgumentParser:
     ro.add_argument("--asked", choices=("verify", "challenge", "fan-out"))
 
     o = sub.add_parser("onboard", help="inventory a projects root; propose tiers + migrations")
-    o.add_argument("root", nargs="?", default=".")
+    o.add_argument("root", nargs="?", help="selected root, required independently when applying plans")
+    o.add_argument("--intakes", help="reviewed intake map keyed by project relative path")
+    o.add_argument("--reorganize", action="store_true", help="propose relocation separately from adoption")
     o.add_argument("--name-style", choices=NAME_STYLES)
     o.add_argument("--plan-out", help="write the proposal JSON here")
     o.add_argument("--apply-plan", help="execute a (reviewed) proposal JSON")
     o.add_argument("--yes", action="store_true", help="actually execute --apply-plan")
 
+    rec = sub.add_parser('recover', help='preview/recover a write or migration journal')
+    rec.add_argument('journal')
+    rec.add_argument('--yes', action='store_true')
     sub.add_parser("version")
     return p
 
 
-def main(argv: list[str] | None = None) -> int:
+def _main(argv: list[str] | None = None) -> int:
     a = build_parser().parse_args(argv)
     if a.cmd == "version":
         print(VERSION)
@@ -994,9 +1082,22 @@ def main(argv: list[str] | None = None) -> int:
         tpl = project_template() if a.level == "project" else harness_template()
         print(json.dumps(tpl, indent=2, ensure_ascii=False))
         return 0
+    if a.cmd == 'recover':
+        record = load_json(a.journal)
+        result = M.recover(a.journal, a.yes) if record.get('version') == M.VERSION else IO.recover_files(a.journal, a.yes)
+        emit(result, a.json, json.dumps(result, indent=2))
+        return 0
     return {"harness": cmd_harness, "new": cmd_new, "apply": cmd_apply, "refine": cmd_refine,
             "check": cmd_check, "index": cmd_index, "rotate": cmd_rotate, "route": cmd_route,
             "onboard": cmd_onboard}[a.cmd](a)
+
+
+def main(argv=None):
+    try:
+        return _main(argv)
+    except (ValueError, OSError, KeyError, TypeError) as e:
+        print(f'error: {e}', file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

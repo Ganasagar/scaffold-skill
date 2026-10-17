@@ -1,5 +1,5 @@
 # {{TITLE}}
-> Harness profile (style, naming, defaults) lives in `~/.codex/AGENTS.md`. Not restated here.
+> Optional harness defaults live in the nearest `.codex/scaffold-skill/profile.json`, then the user profile.
 
 {{INTAKE_BLOCK}}
 
@@ -15,12 +15,7 @@
 - `output/` verified deliverables only. Git-ignored.
 
 ## Routing — tokens are not free
-| Tier | When | Execution | Verification |
-|---|---|---|---|
-| P0 | trivial edit, rename, STATE update | main thread | none |
-| P1 | low-stakes deliverable | main thread | scripted checks + self-checklist |
-| P2 | money · legal · health · outbound · irreversible | main thread builds | spawn `verifier` on `work/claims.md`; REFUTED blocks `output/` |
-| P3 | ≥5 like items or ≥3 heavy sources | ≤4 parallel workers, summaries + file paths only | P2 rule on the final artifact |
+{{ROUTING_TABLE}}
 
 - High-stakes decision memo → also spawn `challenger`.
 - Never spawn agents for P0/P1. "verify", "challenge", "fan out" from the user escalate. Nothing escalates silently.
@@ -32,6 +27,7 @@
 
 ## Rules
 - Never overwrite a work product: bump the version per harness naming.
-- Ask before outbound sends or irreversible operations.
-- Files dropped in chat → `context/` + a row in `REFERENCES.md`.
+- Follow the user's authorization for outbound sends and irreversible operations; do not infer authorization from Git defaults.
+- Save user-provided inputs to `context/` when requested by the task; use a private reference index for sensitive names.
+- If verification agents are unavailable, report verification incomplete; never imply they ran.
 - End of session: update `STATE.md` (Now, Decisions, Log). STATE over 8 KB → `scaffold.py rotate`.

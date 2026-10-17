@@ -26,15 +26,19 @@ def run(*argv):
 class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name)
+        self.root = Path(self.tmp.name).resolve()
         self.home = self.root / "codexhome"
+        self.previous_codex_home = os.environ.get("CODEX_HOME")
         os.environ["CODEX_HOME"] = str(self.home)
         self.intake = self.root / "intake.json"
         self.intake.write_text(json.dumps(INTAKE))
 
     def tearDown(self):
         self.tmp.cleanup()
-        os.environ.pop("CODEX_HOME", None)
+        if self.previous_codex_home is None:
+            os.environ.pop("CODEX_HOME", None)
+        else:
+            os.environ["CODEX_HOME"] = self.previous_codex_home
 
 
 class TestScaffold(Base):
@@ -167,25 +171,26 @@ class TestHarness(Base):
         (self.home / "AGENTS.md").write_text("# my global rules\n")
         ans = self.root / "h.json"
         ans.write_text(json.dumps({"reply_style": "terse", "naming": "name-vN"}))
-        self.assertEqual(run("harness", "init", "--answers", str(ans))[0], 0)
-        run("harness", "init", "--answers", str(ans))
+        self.assertEqual(run("harness", "init", "--scope", "user", "--answers", str(ans))[0], 0)
+        run("harness", "init", "--scope", "user", "--answers", str(ans))
         t = (self.home / "AGENTS.md").read_text()
         self.assertIn("# my global rules", t)
         self.assertEqual(t.count(S.HARNESS_START), 1)
         self.assertTrue((self.home / "agents" / "verifier.toml").is_file())
         self.assertTrue((self.home / "agents" / "challenger.toml").is_file())
-        self.assertEqual(run("harness", "show")[0], 0)
+        self.assertEqual(run("harness", "show", "--scope", "user")[0], 0)
 
     def test_init_rejects_bad_answers(self):
         ans = self.root / "h.json"
         ans.write_text(json.dumps({"naming": "whatever"}))
-        self.assertEqual(run("harness", "init", "--answers", str(ans))[0], 2)
+        self.assertEqual(run("harness", "init", "--scope", "user", "--answers", str(ans))[0], 2)
 
+    @unittest.skipIf(sys.version_info < (3, 11), "TOML edits require Python 3.11+")
     def test_config_append_once(self):
         ans = self.root / "h.json"
         ans.write_text("{}")
-        run("harness", "init", "--answers", str(ans), "--write-config")
-        run("harness", "init", "--answers", str(ans), "--write-config")
+        run("harness", "init", "--scope", "user", "--answers", str(ans), "--write-config")
+        run("harness", "init", "--scope", "user", "--answers", str(ans), "--write-config")
         self.assertEqual((self.home / "config.toml").read_text().count("[agents]"), 1)
 
     def test_agent_tomls_have_required_fields(self):
@@ -231,8 +236,8 @@ class TestOnboard(Base):
         self.assertTrue((projects / "lekiwi-robot").is_dir())
         run("onboard", "--apply-plan", str(plan_file), "--yes")
         moved = projects / "🛠️ Builds" / "🛠️ lekiwi-robot"
-        self.assertTrue(moved.is_dir())
-        self.assertTrue((moved / "AGENTS.md").is_file())  # converted
+        self.assertFalse(moved.exists())  # no reviewed intake: proposal remains review-only
+        self.assertTrue((projects / "lekiwi-robot").is_dir())
         self.assertTrue((projects / "award-travel").is_dir())  # duplicate left for review
         self.assertTrue((projects / "2026-10-01").is_dir())  # dated left for review
 
