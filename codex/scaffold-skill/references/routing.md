@@ -1,45 +1,35 @@
-# Routing & reliability — when to spend tokens
+# Routing and reliability
 
-Codex delegates to subagents only when asked, or when AGENTS.md / skill instructions say so.
-The routing table in each project's AGENTS.md is therefore the on/off switch. Keep it strict.
+The engine's `route()` is the decision source; project tables are generated from its
+results. `route --project ROOT --stakes money --decision --json` resolves local profile
+precedence. It reports requested execution, not proof that an agent was available or ran.
 
-## Tiers
-| Tier | Trigger | Execution | Verification |
-|---|---|---|---|
-| P0 | trivial edit, rename, STATE update | main thread | none |
-| P1 | low-stakes deliverable | main thread | deterministic checks + self-checklist |
-| P2 | any stake: money, legal, health, outbound, irreversible (or harness floor = high) | main thread | claims ledger → `verifier`; REFUTED blocks `output/` |
-| P3 | ≥5 homogeneous items or ≥3 heavy independent sources | ≤4 parallel workers | summaries + paths only; P2 rule on the final artifact |
+P0 trivial maintenance stays in the main thread. P1 low-stakes deliverables use
+appropriate deterministic checks. P2 stakes (money/legal/health/outbound/irreversible)
+or a high profile floor require verification. P3 (at least five items, three independent
+sources, or an explicit fan-out request) permits up to four workers and requires the
+P2 final verification step, even for otherwise low-stakes work. Code verification uses
+`codex review`; other artifacts use `verifier`. High-stakes decisions also use `challenger`.
+Explicit verify/challenge requests escalate to their requested review.
 
-`scaffold.py route --stakes money --decision` gives the same answer deterministically.
+Create `work/claims.md` as needed: claim | source | primary/secondary. Give reviewers only
+the relevant draft, ledger, and sources. Recompute numbers and run appropriate code checks
+before model review. A REFUTED claim or an unverified load-bearing claim blocks PASS.
+Missing agents or host restrictions leave verification incomplete; report that clearly.
 
-## Agents
-| Agent | Kind | Runs when | Input | Output |
-|---|---|---|---|---|
-| `verifier` | custom (`~/.codex/agents/verifier.toml`) | P2 deliverables | `work/claims.md` + cited sources only | `work/verify-<x>.md`, PASS/BLOCK |
-| `challenger` | custom (`~/.codex/agents/challenger.toml`) | high-stakes decision memos, or "challenge this" | decision brief only | `work/challenge-<x>.md`, ranked objections |
-| workers | built-in `default` / `explorer` | P3 fan-out | one slice + questions | ≤ 20-line summary + file path |
-| `codex review` | built-in | code changes at P2 | the diff | review findings |
+Project agents live in ROOT/.codex/agents/; user-wide agents in CODEX_HOME/agents/.
+These are standalone TOML files. The optional concurrency setting is
+`[agents] max_concurrent_threads_per_session = 4`. Setup never replaces an existing
+agents table or silently overwrites a conflicting agent file.
 
-Never: dual verifiers, verifiers checking verifiers, agents at P0/P1, silent escalation.
-User words "verify", "challenge", "fan out" escalate any task.
+Read-only reviewer behavior is an instruction. Custom agents inherit parent permissions;
+a local agent TOML cannot establish an independent read-only sandbox. Review changed
+files after execution. User scope and host tool policy take precedence over the routing
+recommendation. Intake, scaffolding, checking, and refinement require no subagents.
 
-## Claims ledger (`work/claims.md`)
-```text
-| claim | source | tier |
-| Award costs 70k miles one-way | https://… (partner chart) | primary |
-| Lounge access included | blog post | secondary |
-```
-Write rows while drafting, not afterwards. Unsourced → 🔍 unverified in the draft.
-The verifier reads only this file and its sources — bounded input, bounded cost.
+Official references (checked against the local CLI 0.163.0 documentation):
+- https://learn.chatgpt.com/docs/agent-configuration/subagents
+- https://learn.chatgpt.com/docs/config-file/config-reference
 
-## Deterministic before LLM
-Recompute totals, check dates and links, validate JSON/YAML, `python -m py_compile`, run tests.
-These cost no tokens and catch most errors.
-
-## Known limits (Codex)
-- Custom agents cannot get a read-only sandbox; they inherit the parent's. "Read-only" is an
-  instruction. After a verifier run, `git status` should show changes only under `work/`.
-- Concurrency cap: `[agents] max_concurrent_threads_per_session = 4` in `~/.codex/config.toml`
-  (`harness init --write-config` appends it if no `[agents]` table exists).
-- Per-agent model: set `model` in the agent TOML to run the verifier on a cheaper model.
+Native agent discovery has not been exercised by the unit tests; perform an isolated
+host smoke test before relying on custom agents in a new installation.
