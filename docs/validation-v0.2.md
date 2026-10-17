@@ -9,6 +9,8 @@ Passed:
 - Bash syntax check of install.sh.
 - Codex skill-creator format validator.
 - Git diff whitespace validation.
+- All six GitHub CI jobs: Linux/macOS × Python 3.10/3.11/3.14.
+  Initial matrix run: https://github.com/Ganasagar/scaffold-skill/actions/runs/39077689246
 
 A separate real CLI pilot in disposable folders inventoried five projects: legacy,
 existing Codex, nested Git, sensitive inputs, and ambiguous. Four projects were adopted
@@ -26,7 +28,7 @@ ancestor rules, already-tracked private material, escaped/redacted indexes, loca
 malformed markers/TOML, repeated install, owned upgrade, stale-resource cleanup, uninstall
 conflicts, routing combinations, accurate stakes-floor previews, and log rotation boundaries.
 
-Not established by these local checks: GitHub CI matrix success, native custom-agent
+Not established by these checks: native custom-agent
 discovery/execution, arbitrary external path dependencies, configured Codex instruction
 budget overrides, a real production migration, or import completeness. The license is
 also an owner release decision, not an implementation test.

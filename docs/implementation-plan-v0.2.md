@@ -167,7 +167,7 @@ infrastructure remains a manual decision. Categories remain built-in; naming sty
 reviewed destinations are configurable. Config edits on Python 3.10 fail safely with
 instructions to edit manually rather than adding a runtime dependency.
 
-Release qualification still requiring external or owner action: CI matrix results,
-a native Codex custom-agent discovery smoke test in a permitted host session, owner
+The six-job Linux/macOS Python matrix passed in GitHub Actions. Release qualification
+still requiring external or owner action: a native Codex custom-agent discovery smoke test in a permitted host session, owner
 license selection, and real deployment approval/import reconciliation. No real project
 migration or live skill installation is included in this code contribution.
