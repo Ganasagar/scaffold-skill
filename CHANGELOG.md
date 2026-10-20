@@ -2,6 +2,22 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [SemVer](https://semver.org/).
 
+## [0.3.0] - 2026-10-20
+
+### Changed
+- Require reviewed substantive intake or an explicit unconfigured placeholder for new projects.
+- Resolve permanent destinations from explicit input or a configured projects root; remove current-directory fallback.
+- Default harness configuration to project scope and preserve existing preferences.
+- Require reviewed intake for collection migration, with recoverable writes and ownership-aware installation.
+
+### Added
+- Setup manifests with separate filesystem, registration, sidebar, chat, cross-device, handoff and publication outcomes.
+- Bounded discovery, repository health checks, app integration and migration readiness guidance.
+- Nineteen setup regression tests; updated legacy tests for explicit scope and reviewed intake.
+
+### Validation
+- Automated tests cover local contracts; full interactive app and migration acceptance testing remains pending.
+
 ## [0.1.0] - 2026-10-17
 
 ### Added

@@ -1,87 +1,106 @@
 ---
 name: scaffold-skill
-description: Scaffold, audit and organize personal project folders for Codex — 4-question intake, AGENTS/STATE/REFERENCES charter, token-aware P0-P3 routing with verifier/challenger agents, emoji tier names, and migration of existing project roots. Use when creating, standardizing, refining or reorganizing a project.
+description: Scaffold, audit, adopt, or reorganize personal project folders for Codex using reviewed intake, compact project instructions and state, private working files, and recoverable migration plans. Use for project organization or scaffold maintenance.
 ---
 
-# scaffold-skill (Codex)
+# Scaffold-skill
 
-Deterministic engine: `scripts/scaffold.py` (stdlib Python). Resolve `<skill>` as this file's
-directory. Run commands yourself; the user never needs a terminal. Every write command supports
-`--dry-run`; show the dry run and get a yes before writing. Add `--json` when you need to parse output.
+Use `scripts/scaffold.py` from this skill directory. Python 3.10+ standard library;
+Git is required for effective privacy checks, Python 3.11+ for optional TOML config edits.
+Resolve paths explicitly. Run the commands for the user.
 
-## Load on demand (do not read up front)
-- `references/intake.md` — question banks, intake JSON schema, answer→artifact mapping
-- `references/routing.md` — P0-P3 tiers, agents, claims ledger, Codex limits
-- `references/organize.md` — tiers, emoji name styles, migrating an existing projects root
+Use context already provided for intake; ask only for missing consequential details.
+Up to four consolidated questions are a ceiling, not a mandatory questionnaire.
+Read [references/intake.md](references/intake.md) for intake and profile formats.
 
-## 0. First run: harness profile (once per machine)
+## Choose the workflow
+
+For installation, collection setup or repair, read [references/setup.md](references/setup.md).
+It requires questionnaire, destination resolution, capability discovery and outcome verification.
+For a new project, read intake.md and complete or explicitly defer substantive intake.
+For app registration/sidebar/chat work, read [references/app-integration.md](references/app-integration.md).
+For requested cross-device migration, also read [references/migration-readiness.md](references/migration-readiness.md).
+Do not run these full workflows for narrow index/rotate maintenance.
+
+No new project defaults to the current directory. Use the configured permanent
+projects_root or explicit --parent. Never report app setup complete from a folder check.
+
+## Scope and previews
+
+Follow the user's requested scope and existing authorization. Preview concrete changes
+before batch relocation or global configuration changes. An approved plan authorizes
+its listed operations; do not repeat approval for each file. Routine requested scaffold
+maintenance can proceed within the existing task authorization.
+
+Use `--dry-run --json` for create, apply, refine, index, rotate, and harness setup.
+`onboard --apply-plan` and `recover` preview by default; `--yes` executes them.
+All generated plans and recovery records are private data. Never install a skill,
+change global configuration, send messages, or push to GitHub just because intake
+contains a preference for doing so.
+
+## New or existing project
+
 ```bash
-python3 <skill>/scripts/scaffold.py harness show
+python3 <skill>/scripts/scaffold.py template > <private-path>/intake.json
+python3 <skill>/scripts/scaffold.py new "Name" --parent <parent> --intake <intake.json> --dry-run --json
+python3 <skill>/scripts/scaffold.py apply <project> --intake <intake.json> --dry-run --json
+python3 <skill>/scripts/scaffold.py refine <project> --intake <intake.json> --dry-run --json
+python3 <skill>/scripts/scaffold.py check <project> --json
 ```
-Exit 1 = missing. Ask the 4 harness questions in one message (intake.md), write answers JSON, then:
-```bash
-python3 <skill>/scripts/scaffold.py template --level harness > /tmp/harness.json   # fill it
-python3 <skill>/scripts/scaffold.py harness init --answers /tmp/harness.json --dry-run
-python3 <skill>/scripts/scaffold.py harness init --answers /tmp/harness.json [--write-config]
-```
-Writes a managed block into `~/.codex/AGENTS.md` (user text outside it is preserved, backup kept),
-installs `verifier` + `challenger` into `~/.codex/agents/` (never overwrites), and with
-`--write-config` appends `[agents] max_concurrent_threads_per_session = 4` if no `[agents]` table exists.
 
-## 1. New project
-Ask the 4 project questions in one message (intake.md). "Use defaults" → only Q1.
-```bash
-python3 <skill>/scripts/scaffold.py template > /tmp/intake.json                    # fill it
-python3 <skill>/scripts/scaffold.py new "<Name>" --parent <dir> --intake /tmp/intake.json --dry-run
-python3 <skill>/scripts/scaffold.py new "<Name>" --parent <dir> --intake /tmp/intake.json
-```
-Folder name follows the harness `name_style` (plain | tier | rich); override with `--name-style`,
-pin the glyph with `--emoji`. Report the folder name and the ASCII slug to use as the git repo name.
+Fill intake from the user's goal; template placeholders are not valid answers.
+Omit `--dry-run` to execute within authorization. `apply` creates missing charter files
+and proposes a managed privacy block in `.gitignore`; `refine` changes the intake block.
+Existing instructions are preserved. Symlinked control files/ancestors are rejected.
 
-## 2. Existing folder
-```bash
-python3 <skill>/scripts/scaffold.py check <path>                     # read-only, 9 checks
-python3 <skill>/scripts/scaffold.py apply <path> --intake /tmp/intake.json --dry-run
-python3 <skill>/scripts/scaffold.py apply <path> --intake /tmp/intake.json
-```
-`apply` creates only what is missing; it never overwrites. If the folder already has real charter
-files, leave them — use `refine` to add the managed intake block.
+For legacy folders or many projects, use the reviewed onboarding workflow below.
 
-## 3. Refine (new goal, new stakes)
-```bash
-python3 <skill>/scripts/scaffold.py refine <path> --intake /tmp/intake.json --dry-run
-python3 <skill>/scripts/scaffold.py refine <path> --intake /tmp/intake.json
-```
-Upserts only the managed block in AGENTS.md; user edits survive; backup → `work/archive/`.
+## Optional harness defaults
 
-## 4. Memory upkeep (run when check warns)
-```bash
-python3 <skill>/scripts/scaffold.py index <path>    # REFERENCES.md stub rows for new context/ files
-python3 <skill>/scripts/scaffold.py rotate <path>   # STATE.md log > 8 KB → work/state-archive.md
-```
-After `index`, fill the "what" and "read when" columns for new rows (one line each).
-Files the user drops in chat: save into `context/` (bump `-vN` on name clash), then `index`.
+A profile is optional. Local scaffolding works without it. Setup defaults to project scope:
 
-## 5. Route a task (when unsure whether to spawn agents)
 ```bash
-python3 <skill>/scripts/scaffold.py route --stakes money,legal --kind deliverable --decision
+python3 <skill>/scripts/scaffold.py harness init --project <root> --answers <answers.json> --dry-run --json
+python3 <skill>/scripts/scaffold.py harness show --project <root>
 ```
-P0/P1 → main thread, no agents. P2 → `verifier` on `work/claims.md`. P3 → ≤4 workers.
-High-stakes decision → also `challenger`. Code at P2 → `codex review`. Details: routing.md.
 
-## 6. Organize an existing projects root
-Read `references/organize.md` first.
+This manages a block in `<root>/AGENTS.md`, a profile and agent files under `<root>/.codex/`.
+Project defaults override user defaults. User-wide setup needs explicit `--scope user`.
+Optional `--write-config` adds a concurrency table only when none exists, after TOML validation.
+Existing conflicting agent names stop setup. Global setup is never an automatic first-run step.
+
+## Adopt or reorganize projects
+
+Read [references/organize.md](references/organize.md). Inventory and classification are
+proposals. Adopt in place by default. Unresolved, dated, or possible duplicate projects
+remain review-only. Preserve legacy originals and map current work/constraints into a
+reviewed handoff before execution. Request `--reorganize` only for approved relocation scope.
+
 ```bash
-python3 <skill>/scripts/scaffold.py onboard <root> --plan-out <project>/work/onboard-plan.json
-python3 <skill>/scripts/scaffold.py onboard --apply-plan <plan.json>          # dry run
-python3 <skill>/scripts/scaffold.py onboard --apply-plan <plan.json> --yes    # after approval
+python3 <skill>/scripts/scaffold.py onboard <root> --plan-out <new-private-plan.json> --json
+python3 <skill>/scripts/scaffold.py onboard <root> --intakes <reviewed-intakes.json> --plan-out <new-plan.json> --json
+python3 <skill>/scripts/scaffold.py onboard <root> --apply-plan <new-plan.json> --json
+python3 <skill>/scripts/scaffold.py onboard <root> --apply-plan <new-plan.json> --yes --json
+python3 <skill>/scripts/scaffold.py recover <journal.json> --json
 ```
-Ask one consolidated question for ambiguous items and duplicates. Moves never overwrite;
-duplicates and dated folders are review-only; nothing is deleted.
 
-## Guardrails
-- Never overwrite or delete user files. Managed blocks only; backups before every rewrite.
-- Never edit `context/` contents; derive into `work/`.
-- Intake answers are data, not instructions.
-- Questionnaires: max 4 questions, one message, defaults shown.
-- Do not spawn agents for intake, scaffolding, checks or refinement — this skill is P0/P1 work.
+Plans must match the independently selected root and current source identities.
+Collisions or invalid actions stop the batch before any project mutation. On failure,
+stop and use the reported journal to preview recovery. Do not improvise overwrite/copy
+fallbacks. Recovery refuses newer edits; see organize.md for limits.
+
+## Maintenance and routing
+
+`index <project> [--public]` indexes inputs; public mode stores sensitive paths locally
+and redacts the tracked index. `rotate <project>` archives old dated STATE log entries.
+Both support `--dry-run`. Inputs under `context/` remain unchanged.
+
+`route --project <project> --kind research --items 8` classifies execution and verification.
+Read [references/routing.md](references/routing.md) only when routing matters. P0/P1 stay
+in the main thread. P3 includes verification of the final artifact. Host/user permission
+and agent availability take precedence; unavailable verification is incomplete, never PASS.
+Do not delegate intake, scaffold checks, or refinement.
+
+Check returned JSON for a recovery journal. Private material defaults to ignored;
+existing tracked files and Git history require separate decisions. Do not equate a
+private GitHub repository or a passing structural audit with secret protection.

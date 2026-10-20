@@ -13,6 +13,8 @@ import scaffold as S  # noqa: E402
 
 INTAKE = {"goal": "Book an award flight", "done": "tickets issued", "horizon": "2027-03",
           "never": ["never transfer points without asking"], "stakes": ["money"],
+          "readiness": "ready", "project_type": "finite", "scope": "Award travel booking",
+          "reviewed": True, "provenance": {"goal": "User intake", "done": "User intake", "scope": "User intake"},
           "git": {"push": True, "visibility": "private", "ignore_context": True}}
 
 
@@ -167,25 +169,25 @@ class TestHarness(Base):
         (self.home / "AGENTS.md").write_text("# my global rules\n")
         ans = self.root / "h.json"
         ans.write_text(json.dumps({"reply_style": "terse", "naming": "name-vN"}))
-        self.assertEqual(run("harness", "init", "--answers", str(ans))[0], 0)
-        run("harness", "init", "--answers", str(ans))
+        self.assertEqual(run("harness", "init", "--scope", "user", "--answers", str(ans))[0], 0)
+        run("harness", "init", "--scope", "user", "--answers", str(ans))
         t = (self.home / "AGENTS.md").read_text()
         self.assertIn("# my global rules", t)
         self.assertEqual(t.count(S.HARNESS_START), 1)
         self.assertTrue((self.home / "agents" / "verifier.toml").is_file())
         self.assertTrue((self.home / "agents" / "challenger.toml").is_file())
-        self.assertEqual(run("harness", "show")[0], 0)
+        self.assertEqual(run("harness", "show", "--scope", "user")[0], 0)
 
     def test_init_rejects_bad_answers(self):
         ans = self.root / "h.json"
         ans.write_text(json.dumps({"naming": "whatever"}))
-        self.assertEqual(run("harness", "init", "--answers", str(ans))[0], 2)
+        self.assertEqual(run("harness", "init", "--scope", "user", "--answers", str(ans))[0], 2)
 
     def test_config_append_once(self):
         ans = self.root / "h.json"
         ans.write_text("{}")
-        run("harness", "init", "--answers", str(ans), "--write-config")
-        run("harness", "init", "--answers", str(ans), "--write-config")
+        run("harness", "init", "--scope", "user", "--answers", str(ans), "--write-config")
+        run("harness", "init", "--scope", "user", "--answers", str(ans), "--write-config")
         self.assertEqual((self.home / "config.toml").read_text().count("[agents]"), 1)
 
     def test_agent_tomls_have_required_fields(self):
@@ -209,7 +211,7 @@ class TestRoute(unittest.TestCase):
 
 
 class TestOnboard(Base):
-    def test_inventory_proposes_and_applies(self):
+    def test_inventory_requires_reviewed_intake(self):
         projects = self.root / "projects"
         projects.mkdir()
         (projects / "award-travel").mkdir()
@@ -231,8 +233,9 @@ class TestOnboard(Base):
         self.assertTrue((projects / "lekiwi-robot").is_dir())
         run("onboard", "--apply-plan", str(plan_file), "--yes")
         moved = projects / "🛠️ Builds" / "🛠️ lekiwi-robot"
-        self.assertTrue(moved.is_dir())
-        self.assertTrue((moved / "AGENTS.md").is_file())  # converted
+        self.assertFalse(moved.exists())
+        self.assertTrue((projects / "lekiwi-robot").is_dir())
+        self.assertTrue(all(a["op"] == "review" for a in prop["actions"]))
         self.assertTrue((projects / "award-travel").is_dir())  # duplicate left for review
         self.assertTrue((projects / "2026-10-01").is_dir())  # dated left for review
 
